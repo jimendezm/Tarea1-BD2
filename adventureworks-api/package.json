@@ -4,9 +4,11 @@
   "description": "",
   "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "setup-db": "wsl -d Ubuntu -e bash -c 'sqlcmd -S localhost -U SA -i db/StroredProcedures.sql'"
   },
-  "keywords": [],
+  "keywords": ["api", "sql-server", "wsl2", "adventureworks"],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
