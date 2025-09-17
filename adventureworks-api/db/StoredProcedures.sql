@@ -1,61 +1,12 @@
 USE AdventureWorks2022;
 GO
 
--- 1. CRUD para Person.Person
-IF EXISTS (SELECT * FROM sys.objects WHERE type = 'P' AND name = 'uspPersonasGetAll')
-    DROP PROCEDURE uspPersonasGetAll;
-GO
 
-CREATE PROCEDURE uspPersonasGetAll
-AS
-BEGIN
-    SELECT 
-        BusinessEntityID,
-        PersonType,
-        NameStyle,
-        Title,
-        FirstName,
-        MiddleName,
-        LastName,
-        Suffix,
-        EmailPromotion,
-        ModifiedDate
-    FROM Person.Person
-    ORDER BY LastName, FirstName;
-END;
-GO
+-- 1. SELECT - Obtener todas las órdenes
 
--- 2. Obtener persona por ID
-IF EXISTS (SELECT * FROM sys.objects WHERE type = 'P' AND name = 'uspPersonasGetById')
-    DROP PROCEDURE uspPersonasGetById;
-GO
-
-CREATE PROCEDURE uspPersonasGetById
-    @BusinessEntityID INT
-AS
-BEGIN
-    SELECT 
-        BusinessEntityID,
-        PersonType,
-        NameStyle,
-        Title,
-        FirstName,
-        MiddleName,
-        LastName,
-        Suffix,
-        EmailPromotion,
-        ModifiedDate
-    FROM Person.Person 
-    WHERE BusinessEntityID = @BusinessEntityID;
-END;
-GO
-
--- 3. CRUD para Sales.SalesOrderHeader
-IF EXISTS (SELECT * FROM sys.objects WHERE type = 'P' AND name = 'uspOrdenesVentaGetAll')
-    DROP PROCEDURE uspOrdenesVentaGetAll;
-GO
-
-CREATE PROCEDURE uspOrdenesVentaGetAll
+CREATE PROCEDURE uspOrdenesGetAll
+    @PageSize INT = 50,
+    @PageNumber INT = 1
 AS
 BEGIN
     SELECT 
@@ -67,17 +18,7 @@ BEGIN
         Status,
         OnlineOrderFlag,
         SalesOrderNumber,
-        PurchaseOrderNumber,
-        AccountNumber,
         CustomerID,
-        SalesPersonID,
-        TerritoryID,
-        BillToAddressID,
-        ShipToAddressID,
-        ShipMethodID,
-        CreditCardID,
-        CreditCardApprovalCode,
-        CurrencyRateID,
         SubTotal,
         TaxAmt,
         Freight,
@@ -85,16 +26,15 @@ BEGIN
         Comment,
         ModifiedDate
     FROM Sales.SalesOrderHeader
-    ORDER BY OrderDate DESC;
+    ORDER BY OrderDate DESC
+    OFFSET (@PageNumber - 1) * @PageSize ROWS
+    FETCH NEXT @PageSize ROWS ONLY;
 END;
 GO
 
--- 4. Obtener orden de venta por ID
-IF EXISTS (SELECT * FROM sys.objects WHERE type = 'P' AND name = 'uspOrdenesVentaGetById')
-    DROP PROCEDURE uspOrdenesVentaGetById;
-GO
+-- 2. SELECT - Obtener orden por ID
 
-CREATE PROCEDURE uspOrdenesVentaGetById
+CREATE PROCEDURE uspOrdenesGetById
     @SalesOrderID INT
 AS
 BEGIN
@@ -107,17 +47,7 @@ BEGIN
         Status,
         OnlineOrderFlag,
         SalesOrderNumber,
-        PurchaseOrderNumber,
-        AccountNumber,
         CustomerID,
-        SalesPersonID,
-        TerritoryID,
-        BillToAddressID,
-        ShipToAddressID,
-        ShipMethodID,
-        CreditCardID,
-        CreditCardApprovalCode,
-        CurrencyRateID,
         SubTotal,
         TaxAmt,
         Freight,
@@ -126,5 +56,119 @@ BEGIN
         ModifiedDate
     FROM Sales.SalesOrderHeader 
     WHERE SalesOrderID = @SalesOrderID;
+END;
+GO
+
+-- 3. INSERT - Crear nueva orden (versión simplificada)
+
+CREATE PROCEDURE uspOrdenesCreate
+    @CustomerID INT,
+    @ShipDate DATE,
+    @DueDate DATE,
+    @Status TINYINT = 1,
+    @OnlineOrderFlag BIT = 1,
+    @SubTotal MONEY,
+    @TaxAmt MONEY,
+    @Freight MONEY
+AS
+BEGIN
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        
+        INSERT INTO Sales.SalesOrderHeader (
+            RevisionNumber, OrderDate, DueDate, ShipDate,
+            Status, OnlineOrderFlag, SalesOrderNumber,
+            CustomerID, SubTotal, TaxAmt, Freight, TotalDue,
+            ModifiedDate
+        )
+        VALUES (
+            1, -- RevisionNumber
+            GETDATE(), -- OrderDate
+            @DueDate,
+            @ShipDate,
+            @Status,
+            @OnlineOrderFlag,
+            'SO' + CAST(NEXT VALUE FOR Sales.SalesOrderNumberSeq AS NVARCHAR(20)),
+            @CustomerID,
+            @SubTotal,
+            @TaxAmt,
+            @Freight,
+            @SubTotal + @TaxAmt + @Freight, -- TotalDue
+            GETDATE()
+        );
+        
+        SELECT SCOPE_IDENTITY() AS SalesOrderID;
+        
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0
+            ROLLBACK TRANSACTION;
+        
+        THROW;
+    END CATCH
+END;
+GO
+
+-- 4. UPDATE - Actualizar orden
+
+CREATE PROCEDURE uspOrdenesUpdate
+    @SalesOrderID INT,
+    @Status TINYINT,
+    @ShipDate DATE = NULL,
+    @DueDate DATE = NULL,
+    @Comment NVARCHAR(128) = NULL
+AS
+BEGIN
+    UPDATE Sales.SalesOrderHeader
+    SET 
+        Status = @Status,
+        ShipDate = @ShipDate,
+        DueDate = @DueDate,
+        Comment = @Comment,
+        ModifiedDate = GETDATE()
+    WHERE SalesOrderID = @SalesOrderID;
+    
+    SELECT @@ROWCOUNT AS RowsAffected;
+END;
+GO
+
+-- 5. DELETE - Eliminar orden
+CREATE PROCEDURE uspOrdenesDelete
+    @SalesOrderID INT
+AS
+BEGIN
+    DECLARE @Success BIT = 0;
+    DECLARE @Message NVARCHAR(200);
+    
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        
+        IF NOT EXISTS (SELECT 1 FROM Sales.SalesOrderHeader WHERE SalesOrderID = @SalesOrderID)
+        BEGIN
+            SET @Message = 'La orden no existe';
+        END
+        ELSE IF EXISTS (SELECT 1 FROM Sales.SalesOrderDetail WHERE SalesOrderID = @SalesOrderID)
+        BEGIN
+            SET @Message = 'No se puede eliminar: la orden tiene detalles asociados';
+        END
+        ELSE
+        BEGIN
+            DELETE FROM Sales.SalesOrderHeader WHERE SalesOrderID = @SalesOrderID;
+            SET @Success = 1;
+            SET @Message = 'Orden eliminada exitosamente';
+        END
+        
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0
+            ROLLBACK TRANSACTION;
+        
+        SET @Success = 0;
+        SET @Message = 'Error al eliminar: ' + ERROR_MESSAGE();
+    END CATCH
+    
+    SELECT @Success AS Success, @Message AS Message;
 END;
 GO
